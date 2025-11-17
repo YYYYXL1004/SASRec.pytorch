@@ -8,8 +8,8 @@ import argparse
 import numpy as np
 import torch
 
-# 添加 python 目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'python'))
+# 添加当前目录到路径（因为脚本已经在 python 目录下）
+sys.path.insert(0, os.path.dirname(__file__))
 
 from model import SASRec
 from utils import data_partition, WarpSampler, evaluate, evaluate_valid
@@ -106,8 +106,8 @@ def main():
     
     # 数据相关
     parser.add_argument('--inter_file', type=str, 
-                        default='RecBole/dataset/Instrument2018/Instrument2018.inter',
-                        help='.inter 文件路径')
+                        default='../../RecBole/dataset/Instrument2018/Instrument2018.inter',
+                        help='.inter 文件路径（相对于脚本所在目录）')
     parser.add_argument('--dataset', type=str, default='Instrument2018',
                         help='数据集名称')
     parser.add_argument('--prepare_data', action='store_true',
@@ -122,10 +122,10 @@ def main():
                         help='最大序列长度')
     parser.add_argument('--hidden_units', type=int, default=256,
                         help='embedding 维度')
-    parser.add_argument('--num_blocks', type=int, default=2,
+    parser.add_argument('--num_blocks', type=int, default=4,
                         help='Transformer block 数量')
     parser.add_argument('--num_epochs', type=int, default=200)
-    parser.add_argument('--num_heads', type=int, default=2,
+    parser.add_argument('--num_heads', type=int, default=4,
                         help='multi-head attention 的 head 数量')
     parser.add_argument('--dropout_rate', type=float, default=0.5)
     parser.add_argument('--l2_emb', type=float, default=0.0,
@@ -144,15 +144,16 @@ def main():
     
     args = parser.parse_args()
     
-    # 保存原始工作目录
-    original_dir = os.getcwd()
-    python_dir = os.path.join(original_dir, 'python')
+    # 保存原始工作目录和 python 目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    python_dir = script_dir  # 脚本本身就在 python 目录下
+    project_root = os.path.abspath(os.path.join(script_dir, '../..'))
     
     # 准备数据
     data_file = os.path.join(python_dir, 'data', f'{args.dataset}.txt')
     if args.prepare_data or not os.path.exists(data_file):
         os.makedirs(os.path.join(python_dir, 'data'), exist_ok=True)
-        inter_file_abs = os.path.join(original_dir, args.inter_file)
+        inter_file_abs = os.path.abspath(os.path.join(script_dir, args.inter_file))
         prepare_data_from_inter(inter_file_abs, data_file)
     
     # 如果只是提取 embedding
@@ -162,24 +163,29 @@ def main():
             return
         
         # 切换到 python 目录以加载数据
+        current_dir = os.getcwd()
         os.chdir(python_dir)
         dataset = data_partition(args.dataset)
         [user_train, user_valid, user_test, usernum, itemnum] = dataset
-        os.chdir(original_dir)
+        os.chdir(current_dir)
         
         # 创建模型并加载权重
         model = SASRec(usernum, itemnum, args).to(args.device)
-        state_dict_path = os.path.join(original_dir, args.state_dict_path)
+        if os.path.isabs(args.state_dict_path):
+            state_dict_path = args.state_dict_path
+        else:
+            state_dict_path = os.path.abspath(os.path.join(script_dir, args.state_dict_path))
         model.load_state_dict(torch.load(state_dict_path, map_location=torch.device(args.device)))
         
         # 提取 embedding
-        output_dir = os.path.join(original_dir, args.dataset + '_' + args.train_dir)
+        output_dir = os.path.join(project_root, 'SASRec.pytorch', 'output', args.dataset + '_' + args.train_dir)
+        os.makedirs(output_dir, exist_ok=True)
         emb_file = os.path.join(output_dir, f'{args.dataset}_item_emb.npy')
         extract_item_embeddings(model, itemnum, emb_file)
         return
     
     # 创建输出目录
-    output_dir = os.path.join(original_dir, args.dataset + '_' + args.train_dir)
+    output_dir = os.path.join(project_root, 'SASRec.pytorch', 'output', args.dataset + '_' + args.train_dir)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
     
@@ -188,9 +194,10 @@ def main():
         f.write('\n'.join([str(k) + ',' + str(v) for k, v in sorted(vars(args).items(), key=lambda x: x[0])]))
     
     # 切换到 python 目录以加载数据
+    current_dir = os.getcwd()
     os.chdir(python_dir)
     dataset = data_partition(args.dataset)
-    os.chdir(original_dir)
+    os.chdir(current_dir)
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
     
     num_batch = (len(user_train) - 1) // args.batch_size + 1
@@ -225,7 +232,10 @@ def main():
     epoch_start_idx = 1
     if args.state_dict_path is not None:
         try:
-            state_dict_path = os.path.join(original_dir, args.state_dict_path)
+            if os.path.isabs(args.state_dict_path):
+                state_dict_path = args.state_dict_path
+            else:
+                state_dict_path = os.path.abspath(os.path.join(script_dir, args.state_dict_path))
             model.load_state_dict(torch.load(state_dict_path, map_location=torch.device(args.device)))
             tail = args.state_dict_path[args.state_dict_path.find('epoch=') + 6:]
             epoch_start_idx = int(tail[:tail.find('.')]) + 1
